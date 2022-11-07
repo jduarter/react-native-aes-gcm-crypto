@@ -10,49 +10,39 @@ class AesGcmCrypto: NSObject {
     @objc static func requiresMainQueueSetup() -> Bool {
         return false
     }
+    
+    @objc(decryptBytes:withKey:withNonce:withTag:withAuthenticatingData:error:)
+    func decryptBytes(cipherText: [UInt8], key: [UInt8], nonce: [UInt8], tag: [UInt8], authenticatingData: [UInt8]?) throws ->  [UInt8] {
+        let ciphertextData = Data(cipherText)
 
-    @objc(decryptData:withKey:iv:tag:error:)
-    func decryptData(cipherData: Data, key: Data, iv: String, tag: String) throws -> Data {
-        guard let ivData = Data(hexString: iv) else {
-            throw CryptoError.runtimeError("Invalid iv")
-        }
-        guard let tagData = Data(hexString: tag) else {
-            throw CryptoError.runtimeError("Invalid tag")
-        }
+        let sealedBox = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: Data(nonce)),
+                                              ciphertext: ciphertextData,
+                                              tag: Data(tag))
         
-        let skey = SymmetricKey(data: key)
-        let sealedBox = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: ivData),
-                                               ciphertext: cipherData,
-                                               tag: tagData)
-        let decryptedData = try AES.GCM.open(sealedBox, using: skey)
-        return decryptedData
-    }
+        let decryptedData = try authenticatingData == nil ?
+            AES.GCM.open(sealedBox, using: SymmetricKey(data: Data(key))) :
+            AES.GCM.open(sealedBox, using: SymmetricKey(data: Data(key)), authenticating: Data(authenticatingData!))
 
-    func encryptData(plainData: Data, key: Data) throws -> AES.GCM.SealedBox {
-        let skey = SymmetricKey(data: key)
-        return try AES.GCM.seal(plainData, using: skey)
+        return Array(decryptedData)
     }
-
-    @objc(decrypt:withKey:iv:tag:isBinary:withResolver:withRejecter:)
-    func decrypt(base64CipherText: String, key: String, iv: String, tag: String, isBinary: Bool, resolve:RCTPromiseResolveBlock, reject:RCTPromiseRejectBlock) -> Void {
+ 
+    @objc(decrypt:withKey:withNonce:withTag:withAuthenticatingData:withResolver:withRejecter:)
+    func decrypt(cipherText: [UInt8], key: [UInt8], nonce: [UInt8], tag: [UInt8], authenticatingData: [UInt8]?, resolve:RCTPromiseResolveBlock, reject:RCTPromiseRejectBlock) -> Void {
         do {
-            let keyData = Data(base64Encoded: key)!
-            let decryptedData = try self.decryptData(cipherData: Data(base64Encoded: base64CipherText)!, key: keyData, iv: iv, tag: tag)
-            
-            if isBinary {
-                resolve(decryptedData.base64EncodedString())
-            } else {
-                resolve(String(decoding: decryptedData, as: UTF8.self))
-            }
+            resolve(try self.decryptBytes(cipherText: cipherText,
+                                          key: key,
+                                          nonce: nonce,
+                                          tag: tag,
+                                          authenticatingData: authenticatingData))
         } catch CryptoError.runtimeError(let errorMessage) {
             reject("InvalidArgumentError", errorMessage, nil)
         } catch {
             reject("DecryptionError", "Failed to decrypt", error)
         }
     }
-
-    @objc(decryptFile:outputFilePath:withKey:iv:tag:withResolver:withRejecter:)
-    func decryptFile(inputFilePath: String, outputFilePath: String, key: String, iv: String, tag: String,  resolve:RCTPromiseResolveBlock, reject:RCTPromiseRejectBlock) -> Void {
+    
+    @objc(decryptFile:withOutputFilePath:withKey:withNonce:withTag:withResolver:withRejecter:)
+    func decryptFile(inputFilePath: String, outputFilePath: String, key: String, iv: String, tag: String, resolve:RCTPromiseResolveBlock, reject:RCTPromiseRejectBlock) -> Void {
         do {
             let keyData: Data = Data(base64Encoded: key)!
             let file = FileHandle.init(forReadingAtPath: inputFilePath)
@@ -62,7 +52,11 @@ class AesGcmCrypto: NSObject {
             let sealedData: Data = file!.readDataToEndOfFile()
             file!.closeFile()
 
-            let decryptedData: Data = try self.decryptData(cipherData: sealedData, key: keyData, iv: iv, tag: tag)
+            let decryptedData = Data(try self.decryptBytes(cipherText: Array(sealedData),
+                                                           key: Array(keyData),
+                                                           nonce: Array(iv.utf8),
+                                                           tag: Array(tag.utf8),
+                                                           authenticatingData: nil))
 
             if let wfile = FileHandle.init(forWritingAtPath: outputFilePath) {
                 wfile.write(decryptedData)
@@ -78,26 +72,43 @@ class AesGcmCrypto: NSObject {
             reject("DecryptionError", "Failed to decrypt", error)
         }
     }
+            
+    @objc(encryptBytes:withKey:withNonce:withAuthenticatingData:error:)
+    func encryptBytes(plainText: [UInt8], key: [UInt8], nonce: [UInt8]?, authenticatingData: [UInt8]?) throws -> [String: [UInt8]] {
+        let plainData = Data(plainText)
+        let keyObj = SymmetricKey(data: Data(key))
+        let nonceObj = nonce != nil ? try AES.GCM.Nonce(data: Data(nonce!)) : nil
 
-    @objc(encrypt:inBase64:withKey:withResolver:withRejecter:)
-    func encrypt(plainText: String, inBase64: Bool, key: String, resolve:RCTPromiseResolveBlock, reject:RCTPromiseRejectBlock) -> Void {
+        let sealedBox = try authenticatingData != nil ?
+            AES.GCM.seal(plainData,
+                using: keyObj,
+                nonce: nonceObj,
+                authenticating: Data(authenticatingData!)
+            )
+            :
+            AES.GCM.seal(plainData,
+                using: keyObj,
+                nonce: nonceObj
+            )
+
+        let iv = sealedBox.nonce.withUnsafeBytes {
+            Data(Array($0))
+        }
+
+        return [
+            "iv": Array(iv),
+            "tag": Array(sealedBox.tag),
+            "content": Array(sealedBox.ciphertext)
+        ]
+    }
+    
+    @objc(encrypt:withKey:withNonce:withAuthenticatingData:withResolver:withRejecter:)
+    func encrypt(plainText: [UInt8], key: [UInt8], nonce: [UInt8]?, authenticatingData: [UInt8]?, resolve:RCTPromiseResolveBlock, reject:RCTPromiseRejectBlock) -> Void {
         do {
-            let keyData = Data(base64Encoded: key)!
-            let plainData = inBase64 ? Data(base64Encoded: plainText)! : plainText.data(using: .utf8)!
-            let sealedBox = try self.encryptData(plainData: plainData, key: keyData)
-
-            let iv = sealedBox.nonce.withUnsafeBytes {
-                Data(Array($0)).hexadecimal
-            }
-            let tag = sealedBox.tag.hexadecimal
-            let payload = sealedBox.ciphertext.base64EncodedString()
-
-            let response: [String: String] = [
-                "iv": iv,
-                "tag": tag,
-                "content": payload
-            ]
-            resolve(response)
+            resolve(try self.encryptBytes(plainText: plainText,
+                                          key: key,
+                                          nonce: nonce,
+                                          authenticatingData: authenticatingData))
         } catch CryptoError.runtimeError(let errorMessage) {
             reject("InvalidArgumentError", errorMessage, nil)
         } catch {
@@ -114,26 +125,24 @@ class AesGcmCrypto: NSObject {
                 return reject("IOError", "IOError: Could not open file for reading: \(inputFilePath)", nil)
             }
             let plainData = file!.readDataToEndOfFile()
-
-            let sealedBox = try self.encryptData(plainData: plainData, key: keyData)
-
-            let iv = sealedBox.nonce.withUnsafeBytes {
-                Data(Array($0)).hexadecimal
-            }
-            let tag = sealedBox.tag.hexadecimal
-            let payload = sealedBox.ciphertext
+            
+            let encryptedData = try self.encryptBytes(plainText: Array(plainData),
+                                                      key: Array(keyData),
+                                                      nonce: nil,
+                                                      authenticatingData: nil)
 
             if let wfile = FileHandle.init(forWritingAtPath: outputFilePath) {
-                wfile.write(payload)
+                wfile.write(Data(encryptedData["content"]!))
                 wfile.closeFile()
             } else {
                 return reject("IOError", "IOError: Could not open file for writing: \(outputFilePath)", nil)
             }
 
-            let response: [String: String] = [
-                "iv": iv,
-                "tag": tag
+            let response: [String: [UInt8]] = [
+                "iv": encryptedData["iv"]!,
+                "tag": encryptedData["tag"]!
             ]
+            
             resolve(response)
         } catch CryptoError.runtimeError(let errorMessage) {
             reject("InvalidArgumentError", errorMessage, nil)
@@ -142,3 +151,4 @@ class AesGcmCrypto: NSObject {
         }
     }
 }
+
