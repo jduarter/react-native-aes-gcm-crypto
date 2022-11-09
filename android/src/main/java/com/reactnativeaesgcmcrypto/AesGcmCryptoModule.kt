@@ -10,6 +10,8 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
+import android.util.Log
+
 class EncryptionOutput(val iv: ByteArray,
                        val tag: ByteArray,
                        val ciphertext: ByteArray)
@@ -22,55 +24,78 @@ class AesGcmCryptoModule(reactContext: ReactApplicationContext) : ReactContextBa
     return "AesGcmCrypto"
   }
 
-  private fun getSecretKeyFromString(key: ByteArray): SecretKey {
-    return SecretKeySpec(key, 0, key.size, "AES")
+  fun readableArrToByteArr (arr: ReadableArray): ByteArray {
+    val elems = ByteArray(arr.size())
+
+    for (i in 0..(arr.size()-1)) {
+      elems[i] = arr.getInt(i).toByte()
+    }
+
+    return elems
   }
+
+  fun byteArrayToReadableArray (arr: ByteArray): ReadableArray {
+    val elems = Arguments.createArray()
+ 
+    for (i in 0..(arr.size-1)) {
+      elems.pushInt(arr[i].toInt() and 0xff)
+    }
+
+    return elems
+  }
+
+ /*
+ fun rctArrDump(arrName:String, arr: ReadableArray?) {
+    if (arr == null) {
+      Log.d("AesGcmCrypto", arrName + " = null")
+    } else {
+      Log.d("AesGcmCrypto", arrName + " = " + readableArrToByteArr(arr).contentToString())
+    }
+  }
+  */
 
   @Throws(javax.crypto.AEADBadTagException::class)
-  fun decryptData(ciphertext: ByteArray, key: ByteArray, iv: String, tag: String): ByteArray {
-    val secretKey: SecretKey = getSecretKeyFromString(key)
-    val ivData = iv.hexStringToByteArray()
-    val tagData = tag.hexStringToByteArray()
+  fun decryptData(ciphertext: ByteArray, key: ByteArray, iv: ByteArray, tag: ByteArray, associatedData: ByteArray?): ByteArray {
+    val secretKey: SecretKey = SecretKeySpec(key, 0, key.size, "AES")
+
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-    val spec = GCMParameterSpec(GCM_TAG_LENGTH * 8, ivData)
+
+    val spec = GCMParameterSpec(GCM_TAG_LENGTH * 8, iv)
+    
     cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
-    return cipher.doFinal(ciphertext + tagData)
-  }
 
-  fun encryptData(plainData: ByteArray, key: ByteArray): EncryptionOutput {
-    val secretKey: SecretKey = getSecretKeyFromString(key)
+    if (associatedData != null) {
+      cipher.updateAAD(associatedData)
+    }
 
-    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-    cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-    val iv = cipher.iv.copyOf()
-    val result = cipher.doFinal(plainData)
-    val ciphertext = result.copyOfRange(0, result.size - GCM_TAG_LENGTH)
-    val tag = result.copyOfRange(result.size - GCM_TAG_LENGTH, result.size)
-    return EncryptionOutput(iv, tag, ciphertext)
+    return cipher.doFinal(ciphertext + tag)
   }
 
   @ReactMethod
-  fun decrypt(base64CipherText: String,
-              key: String,
-              iv: String,
-              tag: String,
-              isBinary: Boolean,
+  fun decrypt(ciphertext: ReadableArray,
+              key: ReadableArray,
+              iv: ReadableArray,
+              tag: ReadableArray,
+              associatedData: ReadableArray?,
               promise: Promise) {
     try {
-      val keyData = Base64.getDecoder().decode(key)
-      val ciphertext: ByteArray = Base64.getDecoder().decode(base64CipherText)
-      val unsealed: ByteArray = decryptData(ciphertext, keyData, iv, tag)
+      val unsealed = decryptData(
+        readableArrToByteArr(ciphertext),
+        readableArrToByteArr(key),
+        readableArrToByteArr(iv),
+        readableArrToByteArr(tag),
+        if (associatedData != null) readableArrToByteArr(associatedData) else null)
 
-      if (isBinary) {
-        promise.resolve(Base64.getEncoder().encodeToString(unsealed))
-      } else {
-        promise.resolve(unsealed.toString(Charsets.UTF_8))
-      }
+      promise.resolve(byteArrayToReadableArray(unsealed))
     } catch (e: javax.crypto.AEADBadTagException) {
       promise.reject("DecryptionError", "Bad auth tag exception", e)
     } catch (e: GeneralSecurityException) {
       promise.reject("DecryptionError", "Failed to decrypt", e)
     } catch (e: Exception) {
+      /*
+      Log.d("AesGcmCrypto", "decrypt() ERROR: " + e.message)
+      Log.d("AesGcmCrypto", "Stacktrace: " + e.stackTraceToString())
+      */
       promise.reject("DecryptionError", "Unexpected error", e)
     }
   }
@@ -83,9 +108,8 @@ class AesGcmCryptoModule(reactContext: ReactApplicationContext) : ReactContextBa
                   tag: String,
                   promise: Promise) {
     try {
-      val keyData = Base64.getDecoder().decode(key)
       val ciphertext = File(inputFilePath).inputStream().readBytes()
-      val unsealed: ByteArray = decryptData(ciphertext, keyData, iv, tag)
+      val unsealed = decryptData(ciphertext, key.toByteArray(), iv.toByteArray(), tag.toByteArray(), null)
 
       File(outputFilePath).outputStream().write(unsealed)
       promise.resolve(true)
@@ -98,23 +122,59 @@ class AesGcmCryptoModule(reactContext: ReactApplicationContext) : ReactContextBa
     }
   }
 
+  fun encryptData(plainData: ByteArray, key: ByteArray, iv: ByteArray?, associatedData: ByteArray?): EncryptionOutput {
+    val secretKey: SecretKey = SecretKeySpec(key, 0, key.size, "AES")
+
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+
+    if (iv != null) {
+      cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_LENGTH * 8, iv))
+    } else {
+      cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+    }
+    
+    if (associatedData != null) {
+      cipher.updateAAD(associatedData)
+    }
+
+    val result = cipher.doFinal(plainData)
+
+    val ciphertext = result.copyOfRange(0, result.size - GCM_TAG_LENGTH)
+    val tag = result.copyOfRange(result.size - GCM_TAG_LENGTH, result.size)
+
+    val usedIV = cipher.iv.copyOf()
+
+    return EncryptionOutput(usedIV, tag, ciphertext)
+  }
+
   @ReactMethod
-  fun encrypt(plainText: String,
-              inBinary: Boolean,
-              key: String,
+  fun encrypt(plainData: ReadableArray,
+              key: ReadableArray,
+              iv: ReadableArray?,
+              associatedData: ReadableArray?,
               promise: Promise) {
     try {
-      val keyData = Base64.getDecoder().decode(key)
-      val plainData = if (inBinary) Base64.getDecoder().decode(plainText) else plainText.toByteArray(Charsets.UTF_8)
-      val sealed = encryptData(plainData, keyData)
+      val sealed = encryptData(
+        readableArrToByteArr(plainData),
+        readableArrToByteArr(key),
+        if (iv != null) readableArrToByteArr(iv) else null,
+        if (associatedData != null) readableArrToByteArr(associatedData) else null,
+      )
+
       var response = WritableNativeMap()
-      response.putString("iv", sealed.iv.toHex())
-      response.putString("tag", sealed.tag.toHex())
-      response.putString("content", Base64.getEncoder().encodeToString(sealed.ciphertext))
+
+      response.putArray("iv", byteArrayToReadableArray(sealed.iv))
+      response.putArray("tag", byteArrayToReadableArray(sealed.tag))
+      response.putArray("content", byteArrayToReadableArray(sealed.ciphertext))
+
       promise.resolve(response)
     } catch (e: GeneralSecurityException) {
       promise.reject("EncryptionError", "Failed to encrypt", e)
     } catch (e: Exception) {
+      /*
+      Log.d("AesGcmCrypto", "encrypt() ERROR: " + e.message)
+      Log.d("AesGcmCrypto", "Stacktrace: " + e.stackTraceToString())
+      */
       promise.reject("EncryptionError", "Unexpected error", e)
     }
   }
@@ -127,7 +187,7 @@ class AesGcmCryptoModule(reactContext: ReactApplicationContext) : ReactContextBa
     try {
       val keyData = Base64.getDecoder().decode(key)
       val plainData = File(inputFilePath).inputStream().readBytes()
-      val sealed = encryptData(plainData, keyData)
+      val sealed = encryptData(plainData, keyData, null, null)
       File(outputFilePath).outputStream().write(sealed.ciphertext)
       var response = WritableNativeMap()
       response.putString("iv", sealed.iv.toHex())
