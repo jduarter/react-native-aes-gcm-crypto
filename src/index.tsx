@@ -1,19 +1,19 @@
 import { NativeModules } from 'react-native';
 
 export type EncryptedData = {
-  iv: string;
-  tag: string;
-  content: string;
+  iv: Uint8Array;
+  tag: Uint8Array;
+  content: Uint8Array;
 };
 
 type AesGcmCryptoType = {
   decrypt(
-    base64Ciphertext: string,
-    key: string,
-    iv: string,
-    tag: string,
-    isBinary: boolean
-  ): Promise<string>;
+    ciphertext: Uint8Array,
+    key: Uint8Array,
+    iv: Uint8Array,
+    tag: Uint8Array,
+    associatedData?: Uint8Array
+  ): Promise<Uint8Array>;
   decryptFile(
     inputFilePath: string,
     outputFilePath: string,
@@ -22,9 +22,10 @@ type AesGcmCryptoType = {
     tag: string
   ): Promise<boolean>;
   encrypt(
-    plainText: string,
-    inBinary: boolean,
-    key: string
+    plainText: Uint8Array,
+    key: Uint8Array,
+    iv?: Uint8Array,
+    associatedData?: Uint8Array
   ): Promise<EncryptedData>;
   encryptFile(
     inputFilePath: string,
@@ -38,4 +39,24 @@ type AesGcmCryptoType = {
 
 const { AesGcmCrypto } = NativeModules;
 
-export default AesGcmCrypto as AesGcmCryptoType;
+const toUint8Array = (arr: Array<number>): Uint8Array => new Uint8Array(arr);
+
+const WiredAesGcmCrypto = {
+  encrypt: async (...args: any[]) => {
+    const r = await AesGcmCrypto.encrypt(...args);
+
+    return Object.getOwnPropertyNames(r).reduce(
+      (last, curr) => ({
+        ...last,
+        [curr]: toUint8Array(r[curr]),
+      }),
+      {}
+    );
+  },
+  decrypt: async (...args: any[]) =>
+    toUint8Array(await AesGcmCrypto.decrypt(...args)),
+  encryptFile: AesGcmCrypto.encryptFile,
+  decryptFile: AesGcmCrypto.decryptFile,
+};
+
+export default WiredAesGcmCrypto as AesGcmCryptoType;
