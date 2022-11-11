@@ -1,6 +1,6 @@
 {
   "name": "react-native-aesgcm",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "AES-GCM encryption/decryption for React Native",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
