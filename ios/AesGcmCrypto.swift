@@ -77,7 +77,7 @@ class AesGcmCrypto: NSObject {
     func encryptBytes(plainText: [UInt8], key: [UInt8], nonce: [UInt8]?, authenticatingData: [UInt8]?) throws -> [String: [UInt8]] {
         let plainData = Data(plainText)
         let keyObj = SymmetricKey(data: Data(key))
-        let nonceObj = nonce != nil ? try AES.GCM.Nonce(data: Data(nonce!)) : nil
+        let nonceObj = nonce != nil ? try AES.GCM.Nonce(data: Data(nonce!)) : AES.GCM.Nonce()
 
         let sealedBox = try authenticatingData != nil ?
             AES.GCM.seal(plainData,
