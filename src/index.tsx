@@ -44,7 +44,7 @@ const toUint8Array = (arr: Array<number>): Uint8Array => new Uint8Array(arr);
 
 const WiredAesGcmCrypto = {
   encrypt: async (...args: any[]) => {
-    const nativeArgs = [...args.map((a)=>([...a]))];
+    const nativeArgs: any[] = [...args.map((a)=>([...a]))];
     while (nativeArgs.length < 4) {
       nativeArgs.push(null);
     }
