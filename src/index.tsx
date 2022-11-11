@@ -40,10 +40,16 @@ type AesGcmCryptoType = {
 const { AesGcmCrypto } = NativeModules;
 
 const toUint8Array = (arr: Array<number>): Uint8Array => new Uint8Array(arr);
+ 
 
 const WiredAesGcmCrypto = {
   encrypt: async (...args: any[]) => {
-    const r = await AesGcmCrypto.encrypt(...args);
+    const nativeArgs = [...args.map((a)=>([...a]))];
+    while (nativeArgs.length < 4) {
+      nativeArgs.push(null);
+    }
+
+    const r = await AesGcmCrypto.encrypt(...nativeArgs);
 
     return Object.getOwnPropertyNames(r).reduce(
       (last, curr) => ({
@@ -55,6 +61,7 @@ const WiredAesGcmCrypto = {
   },
   decrypt: async (...args: any[]) =>
     toUint8Array(await AesGcmCrypto.decrypt(...args)),
+
   encryptFile: AesGcmCrypto.encryptFile,
   decryptFile: AesGcmCrypto.decryptFile,
 };
